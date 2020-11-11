@@ -6,7 +6,8 @@ from mpl_toolkits.mplot3d import Axes3D
 from collections import OrderedDict
 from itertools import product
 from scipy.signal import butter, freqz
-
+import zipfile
+import os
 
 def timeshift1d(s,t0):
     r'''time shift (t0) for 1-d signal'''
@@ -152,7 +153,16 @@ def slice_show(ax, ms, xyz, od, rg=None, offset=0, rcstride=(10,10)):
     
     return ax
 
-   
+def un_zip(file_name,dd):
+    """unzip the zip file "file_name" into "dd" directory"""
+    zip_file = zipfile.ZipFile(file_name)
+    if os.path.isdir(dd):
+        pass
+    else:
+        os.mkdir(dd)
+    for names in zip_file.namelist():
+        zip_file.extract(names,dd)
+    zip_file.close()
     
     
     
