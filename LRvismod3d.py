@@ -27,7 +27,7 @@ class source:
         self.sl = sl # length of the Ricker source (int scalar)
         self.path = path # path of the source function file (str)
         self.fn = fn # source function file name, if not given, generate the Ricker wavelet and save to this file (str)
-        self.ss = self.s() # wavelet time seris (1darray, float, (sl,))
+        self.ss = self.s() # wavelet time series (1darray, float, (sl,))
         
         self.tol = tol # amplitude threshold when selecting valid frequency samples for the source wavelet (float scalar, <1)
         self.ws, fd = self.wscal() # frequency samples with "big enough" (according to the self.tol) amplitude (1darray, float, (nw,))
@@ -41,7 +41,6 @@ class source:
             y = (1-2*(pi*self.fs*t)**2)*np.exp(-(pi*self.fs*t)**2)
             if self.order!=0:
                 y = deri1d(y,self.order)
-            y.tofile('/'.join((self.path,'s.dat')))
         else:
             y = np.fromfile('/'.join((path,fn)))
             self.t0 = None
@@ -57,6 +56,7 @@ class source:
         return y
     
     def wscal(self):
+        r'''calculate the frequency samples and the dominant frequency of the source amplitude spectrum'''
         f = np.fft.fftfreq(self.sl, self.dt)
         Sa = np.abs(np.fft.fft(self.ss))
         San = Sa[:(self.sl+1)//2]
@@ -87,9 +87,9 @@ class model:
         self.path = path # head and biniray files path (str)
         inp = self._readhead(head)
         self.fn = inp[0] # bininary file name (str)
-        self.n = inp[1] # model dimension (list, int, (3))
-        self.o = inp[2] # model origin (list, float, (3))
-        self.d = inp[3] # model cell size (list, float, (3))
+        self.n = inp[1] # model dimension (list, int, (3,))
+        self.o = inp[2] # model origin (list, float, (3,))
+        self.d = inp[3] # model cell size (list, float, (3,))
         self.x, self.y, self.z = self.axcoordinate() # model grid coordinates (1darray, float, (n[012],))
         self.md = self.mdarray() # model value array (3darray, float, n)
         if f0 is not None:
@@ -99,9 +99,7 @@ class model:
         
     def axcoordinate(self):
         r'''create model grid coordinates'''
-        x = np.arange(self.o[0],self.o[0]+self.d[0]*self.n[0],self.d[0])
-        y = np.arange(self.o[1],self.o[1]+self.d[1]*self.n[1],self.d[1])
-        z = np.arange(self.o[2],self.o[2]+self.d[2]*self.n[2],self.d[2])
+        x,y,z = deque(np.arange(self.o[i],self.o[i]+self.d[i]*self.n[i],self.d[i]) for i in range(3))
         return x, y, z
     
     def _readhead(self, head):
@@ -112,8 +110,7 @@ class model:
                 d1,d2,d3-spatial intervals (float scalar)
                 ***esize and format is fixed as:
                     4 (float32) and big endian 
-                    (i.e., dtype = '>f4')'''
-    
+                    (i.e., dtype = '>f4')'''    
         fh = '/'.join((self.path,head))
         with open(fh) as f:
             lines = f.readlines()
@@ -148,7 +145,6 @@ class model:
             the dimension order of md is (x,y,z)'''
         md = np.fromfile(self.fn, dtype = '>f4')
         md = np.array(np.reshape(md,tuple(self.n),'F'), dtype = np.float32)
-        
         return md 
 
 # create slicing indices and params for hybrid absorbing boundary condition
@@ -156,10 +152,9 @@ class hABC:
     def __init__(self, n, N, M=1):
         r'''define hybrid absorbing boundary nodes related to
             hybrid OWWE absorbing boundary conditions
-            n-model deminsion (models.n)
+            n-model deminsion (model.n)
             N-number of non-zero absorbing layers (int scalar)
-            M-pure owwe absorbing layers (int scalar)
-            *The total number of absorbing layer is N+1'''
+            M-pure owwe absorbing layers among the N layers (int scalar)'''
         self.N = N
         self.M = M
         self.n = n
@@ -171,7 +166,8 @@ class hABC:
               np.tile(np.array(deque(combinations([1,2,3],2)),dtype=np.int16),(4,1))
         cod = np.tile([1,2,3],(8,1))*\
               np.array(deque(product([1,-1],[1,-1],[1,-1])),dtype=np.int16)
-        # generate all 6 plane boundary nodes and cat them together
+        
+        # generate all 6 plane-boundary nodes and cat them together
         for i in range(len(pod)):
             print(f'Plane No: {i+1}')
             w, Bi, Ii, Bin, Iin = self.planeidx(pod[i])
@@ -184,11 +180,11 @@ class hABC:
                 Bnp = np.concatenate((Bnp,Bin),axis=1)
                 Inp = np.concatenate((Inp,Iin),axis=1)
         self.wp, self.Bp, self.Ip, self.Bnp, self.Inp = \
-        wp, tuple(Bp.transpose()), tuple(Ip.transpose()),\
-        [tuple(Bnp[i].transpose()) for i in range(4)],\
-        [tuple(Inp[i].transpose()) for i in range(4)]
+        wp, tuple(Bp.T), tuple(Ip.T),\
+        [tuple(Bnp[i].T) for i in range(4)],\
+        [tuple(Inp[i].T) for i in range(4)]
         
-        # generate all 12 edge boundary nodes and cat them together
+        # generate all 12 edge-boundary nodes and cat them together
         for i in range(len(eod)):
             print(f'Edge No: {i+1}')
             w, Bi, Bin = self.edgeidx(eod[i])
@@ -198,10 +194,10 @@ class hABC:
                 we = np.concatenate((we,w),axis=0)
                 Be = np.concatenate((Be,Bi),axis=0)
                 Bne = np.concatenate((Bne,Bin),axis=1)
-        self.we, self.Be = we, tuple(Be.transpose())
-        self.Bne = [tuple(Bne[i].transpose()) for i in range(2)]
+        self.we, self.Be = we, tuple(Be.T)
+        self.Bne = [tuple(Bne[i].T) for i in range(2)]
         
-        # generate all 8 corner boundary nodes and cat them together
+        # generate all 8 corner-boundary nodes and cat them together
         for i in range(len(cod)):
             print(f'Corner No: {i+1}')
             w, Bi, Bin, Binn, Bind = self.corneridx(cod[i])
@@ -214,27 +210,26 @@ class hABC:
                 Bnc = np.concatenate((Bnc,Bin),axis=1)
                 Bnnc = np.concatenate((Bnnc,Binn),axis=1)
                 Bndc = np.concatenate((Bndc,Bind),axis=1)
-        self.wc, self.Bc = wc, tuple(Bc.transpose())
-        self.Bnc, self.Bnnc, self.Bndc = [tuple(Bnc[i].transpose()) for i in range(3)]\
-                                        ,[tuple(Bnnc[i].transpose()) for i in range(3)]\
-                                        ,[tuple(Bndc[i].transpose()) for i in range(3)]
-
+        self.wc, self.Bc = wc, tuple(Bc.T)
+        self.Bnc, self.Bnnc, self.Bndc = [tuple(Bnc[i].T) for i in range(3)]\
+                                        ,[tuple(Bnnc[i].T) for i in range(3)]\
+                                        ,[tuple(Bndc[i].T) for i in range(3)]
+    
     def _w2cal(self):
+        r'''calculate the transferring weight for TWWE:
+            output:
+                w2-TWWE weight vector (1D float array, (N,))'''
         a = 1.5+0.07*(self.N-self.M)
-        w1 = np.zeros(self.N+1,dtype=np.float32)
-        for i in range(self.N+1):
+        w1 = np.zeros(self.N,dtype=np.float32)
+        for i in range(self.N):
             if i <= self.M:
                 w1[i] = 1
-            else:
-                if i < self.N:
-                    w1[i] = ((self.N-i)/(self.N-self.M))**a
-                else:
-                    w1[i] = 0
+            elif i < self.N:
+                w1[i] = ((self.N-i)/(self.N-self.M))**a
         w2 = 1-np.flip(w1)
         
         return w2
-    
-    
+        
     def planeidx(self, od):
         r'''generate plane Boundary nodes indices according to outer direction:
             od-standing x, y or z axes representing by 1, 2, 3 
@@ -245,24 +240,24 @@ class hABC:
         mask = ~(self.ax == abs(od))
         td1, td2 = self.ax[mask]
         # set the outter direction starting index
-        sidx = self.N
+        sidx = self.N-1
         if od > 0:
             sidx += self.n[od-1]+1
         # find the basic number of nodes along tangent directions
         n1 = self.n[td1-1]
         n2 = self.n[td2-1]
-        Ni = [(n1+2*i)*(n2+2*i) for i in range(self.N+1)]
+        Ni = [(n1+2*i)*(n2+2*i) for i in range(self.N)]
         Ni.insert(0,0)
         Nic = np.cumsum(Ni)
         N = Nic[-1]
         # loop through all Bi and save idx_od, idx_td1, idx_td2 and w
         Bi = np.zeros((N,3),dtype=np.int16)
         w = np.zeros(N,dtype=np.float32)
-        for i in range(self.N+1):
+        for i in range(self.N):
             I = sidx+s*i
             Bi[Nic[i]:Nic[i+1],0] = I
             Bi[Nic[i]:Nic[i+1],1:] = np.array(deque(product(range(n1+2*i),range(n2+2*i))),dtype=np.int16)
-            Bi[Nic[i]:Nic[i+1],1:] += self.N+1-i
+            Bi[Nic[i]:Nic[i+1],1:] += self.N-i
             w[Nic[i]:Nic[i+1]] = self.w2[i]
         # generate Ii
         Ii = np.array(Bi)
@@ -306,25 +301,25 @@ class hABC:
         mask = (self.ax!=od1) * (self.ax!=od2)
         td = self.ax[mask][0]
         # set the outter direction starting index
-        sidx1 = self.N
-        sidx2 = self.N
+        sidx1 = self.N-1
+        sidx2 = self.N-1
         if s1 > 0:
             sidx1 += self.n[od1-1]+1
         if s2 > 0:
             sidx2 += self.n[od2-1]+1
         # find the basic number of nodes along tangent direction
         n = self.n[td-1]
-        Ni = [n+2*i for i in range(self.N+1)]
+        Ni = [n+2*i for i in range(self.N)]
         Ni.insert(0,0)
         Nic = np.cumsum(Ni)
         N = Nic[-1]
         # loop through all Bi
         Bi = np.zeros((N,3),dtype=np.int16)
         w = np.zeros(N,dtype=np.float32)
-        for i in range(self.N+1):
+        for i in range(self.N):
             I1 = sidx1+s1*i
             I2 = sidx2+s2*i
-            Bi[Nic[i]:Nic[i+1],:] = np.array([[I1,I2,j+self.N+1-i] for j in range(n+2*i)],dtype=np.int16)
+            Bi[Nic[i]:Nic[i+1],:] = np.array([[I1,I2,j+self.N-i] for j in range(n+2*i)],dtype=np.int16)
             w[Nic[i]:Nic[i+1]] = self.w2[i]
 
         # generate Bin
@@ -337,6 +332,7 @@ class hABC:
         pm = np.zeros(3,dtype=np.int16)
         for i in range(3):
             pm[odr[i]-1] = i
+            
         # permutated idx
         pBi = Bi[:,pm]
         pBin = Bin[:,:,pm]
@@ -350,23 +346,23 @@ class hABC:
         # identify outter direction and its sign
         s = np.sign(od)
         # set the outter direction starting index
-        sidx = [self.N,self.N,self.N]
+        sidx = [self.N-1,self.N-1,self.N-1]
         for i in range(3):
             if s[i] > 0:
                 sidx[i] += self.n[i]+1
         # loop through all Bi and w
-        Bi = np.array([[sidx[j]+s[j]*i for j in range(3)] for i in range(self.N+1)],dtype=np.int16)
+        Bi = np.array([[sidx[j]+s[j]*i for j in range(3)] for i in range(self.N)],dtype=np.int16)
         w = self.w2
         
         # Generate Bin:(Bx, By, Bz), Binn:(Bxx, Byy, Bzz), Bind:(Bxy, Byz, Bzx)
         Bin = np.tile(Bi,(3,1,1))
-        for i,j in product(range(3),range(self.N+1)):
+        for i,j in product(range(3),range(self.N)):
             Bin[i][j][i] -= s[i]
         Binn = np.copy(Bin)
-        for i,j in product(range(3),range(self.N+1)):
+        for i,j in product(range(3),range(self.N)):
             Binn[i][j][i] -= s[i]
         Bind = np.copy(Bin)
-        for j in range(self.N+1):
+        for j in range(self.N):
             Bind[0][j][1] -= s[1]
             Bind[1][j][2] -= s[2]
             Bind[2][j][0] -= s[0]
@@ -390,13 +386,12 @@ class expand_model_hABC:
         self.ne = np.array(vm.n)
         self.oe = np.array(vm.o)
         for i in range(3):
-            self.ne[i] += 2*(self.Nmax) # expanded model dimension (list, int, (3))
-            self.oe[i] -= self.Nmax*self.d[i] # expanded model origin (list, float, (3))
-        self.xe = np.arange(self.oe[0],self.oe[0]+self.d[0]*self.ne[0],self.d[0])
-        self.ye = np.arange(self.oe[1],self.oe[1]+self.d[1]*self.ne[1],self.d[1])
-        self.ze = np.arange(self.oe[2],self.oe[2]+self.d[2]*self.ne[2],self.d[2]) # expanded model grid coordinates (1darray, float, (ne[012],))
-        self.vme = np.array(expand(vm.md, self.Nmax-1)) # velocity array (3darray, float, ne)
-        self.gme = np.array(expand(np.arctan(1/Qm.md)/pi, self.Nmax-1)) # gamma array (3darray, float, ne)
+            self.ne[i] += 2*(self.Nmax) # expanded model dimension (list, int, (3,))
+            self.oe[i] -= self.Nmax*self.d[i] # expanded model origin (list, float, (3,))
+        # expanded model grid coordinates (1darray, float, (ne[012],))
+        self.xe, self.ye, self.ze = deque(np.arange(self.oe[i],self.oe[i]+self.d[i]*self.ne[i],self.d[i]) for i in range(3))
+        self.vme = np.array(expand(vm.md, self.Nmax)) # velocity array (3darray, float, ne)
+        self.gme = np.array(expand(np.arctan(1/Qm.md)/pi, self.Nmax)) # gamma array (3darray, float, ne)
         self.w0 = vm.w0
 
 # create acquisation geometry information and its corresponding sorting methods
@@ -404,10 +399,8 @@ class acqgeo:
     def __init__(self, ids, idr, osxy=None):
         r'''define source and receiver indices, it requires
             ids and idr as inputs:
-                ids-source idx along x, y and z directions:
-                    OrderedDict{x=idsx, y=idsy, z=idsz}
-                idr-receiver idx along x, y and z directions:
-                    OrderedDict{x=idrx, y=idry, z=idrz}
+                ids-source index along x, y and z directions (2D int array, (ns,3))
+                idr-receiver index along x, y and z directions (2D int array, (nr,3))
             the offset range for limit the receiver number for each shot (default is no limitation):
                 osxy-(osx,osy) (osx and osy are scalar)'''
         
@@ -469,9 +462,9 @@ class acqgeo:
                 inds-source index tuple (idx,idy,idz)
                 lidr-x or y index for the receiver line (int scalar or int tuple)
                 lm-line mode:
-                    'x'-indr is x index
-                    'y'-indr is y index
-                    'xy'-indr is tuple with x and y index'''
+                    'x'-lidr is x index
+                    'y'-lidr is y index
+                    'xy'-lidr is tuple with x and y index'''
         
         # find shot No.
         sn = np.arange(self.ns)
@@ -712,7 +705,7 @@ class LRdecomp:
         print('Ws for W2')
         Ws = Wks_fun(self.Ku, self.Pxu[xsidx])
         print('RRQR for Ws')
-        _, P2 = la.qr(Ws.transpose(), overwrite_a=True, mode='r', pivoting=True)
+        _, P2 = la.qr(Ws.T, overwrite_a=True, mode='r', pivoting=True)
         P2m = P2[:self.m]
         Kum = self.Ku[P2m]
         
@@ -724,7 +717,7 @@ class LRdecomp:
         
         # reshape W1 and pk
         rs = tuple(np.insert(self.ms,0,self.n))
-        W1 = np.reshape(W1.transpose(),rs)
+        W1 = np.reshape(W1.T,rs)
         pk = np.reshape(A@W2,rs)
         
         # trancate the accuracy for efficiency
@@ -748,11 +741,11 @@ class LRmodeling:
                  ,outpath='./outputs'):
         r'''intialize the modeling using following parms:
             basic_parm--basic parameters:
-                dt, nt, ln, lm
+                dt, nt, f0, ln, lm
             source--source function information (source class)
             acqgeo--cquisation geometry class (acqgeo class)
             vmh--velocity model headfile (str)
-            Qmh--Q model head file (str)
+            Qmh--Q model headfile (str)
             typ_tsc--temporal compensator type: 0-no compensator; 1-Compensators A; 2-Compensators B
             abc--absorbing boundary condition type and parameter (dict)
             mp--GPU memory pool (cupy.memoryPool class)
@@ -791,10 +784,9 @@ class LRmodeling:
                 self.vgme = expand_model_naABC(typ_tsc,vm,Qm,self.dt,source.ws,vareps=par_abc)
         else:
             print('Model expanding for hABC...')
-            
             self.vgme = expand_model_hABC(vm,Qm,par_abc)
             vmno = [i-2*(self.vgme.Nmax) for i in self.vgme.ne]
-            self.ABC = hABC(vmno, self.vgme.Nmax-1)
+            self.ABC = hABC(vmno, self.vgme.Nmax)
         self.typ_abc = typ_abc
         print(f'Absorbing layer No: {self.vgme.Nmax}')
         print(f'Runtime for preparing ABCs: {time.time()-ts0} s') # test runtime
@@ -832,9 +824,9 @@ class LRmodeling:
         self.mp.free_all_blocks()
         
         # interior domain coordinates
-        self.xyz = [self.vgme.xe[self.vgme.Nmax:self.vgme.ne[0]-self.vgme.Nmax],\
-               self.vgme.ye[self.vgme.Nmax:self.vgme.ne[1]-self.vgme.Nmax],\
-               self.vgme.ze[self.vgme.Nmax:self.vgme.ne[2]-self.vgme.Nmax]]
+        self.xyz = [self.vgme.xe[self.vgme.Nmax:-self.vgme.Nmax],\
+               self.vgme.ye[self.vgme.Nmax:-self.vgme.Nmax],\
+               self.vgme.ze[self.vgme.Nmax:-self.vgme.Nmax]]
         
         print('Modeling preparation done!')
 
@@ -868,7 +860,7 @@ class LRmodeling:
         
         if self.typ_abc == 'hABCs':
             r'''here we assume d used in habc are the same along three dimensions,
-            this is a bug that requires futrue modification'''
+            this is a flaw of this package that requires futrue modification'''
             if len(list(set(self.vgme.d))) == 1:
                 d = self.vgme.d[0]
             else:
@@ -893,7 +885,7 @@ class LRmodeling:
             barS.update(ish+1)
             # get shot position index and corresponding receiver position index
             sidx = cubeidx(self.acgeo.ids[ish]+self.vgme.Nmax)
-            ridx = tuple((self.acgeo.idr_shot[ish]+self.vgme.Nmax).transpose())
+            ridx = tuple((self.acgeo.idr_shot[ish]+self.vgme.Nmax).T)
             # create initial time step wavefield
             p0 = cp.zeros(self.ms,dtype=np.float32)
             p1 = cp.array(p0)
@@ -983,9 +975,9 @@ class LRmodeling:
                 if sb:
                     if (it in tsample):
                         p2d = p2.get()
-                        smd = p2d[self.vgme.Nmax:self.vgme.ne[0]-self.vgme.Nmax,\
-                                  self.vgme.Nmax:self.vgme.ne[1]-self.vgme.Nmax,\
-                                  self.vgme.Nmax:self.vgme.ne[2]-self.vgme.Nmax]
+                        smd = p2d[self.vgme.Nmax:-self.vgme.Nmax,\
+                                  self.vgme.Nmax:-self.vgme.Nmax,\
+                                  self.vgme.Nmax:-self.vgme.Nmax]
                         figt, axt = show3D(smd
                                     ,xyz=self.xyz
                                     ,xyzi=xyzi

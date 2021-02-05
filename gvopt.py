@@ -7,6 +7,7 @@ import pandas as pd
 from itertools import product
 from basicFun import expand
 import progressbar
+from collections import deque
 
 class stability_cal:
     r'''According to given reference frequency and time step, calculate the stability factors for sampled gamma;
@@ -139,16 +140,17 @@ class vgopt_model:
 
 class vgopt:
     r'''velocity-gamma optimization'''
-    def __init__(self, vb, gb, mp):
+    def __init__(self, vb, gb, mp, antialias=True):
         self.mp = mp # model parameters (vgopt_model class)
         self.vb = vb # boundary point velocity (scalar, float)
         self.gb = gb # boundary point gamma (scalar, float)
         self.w = np.array(mp.ws) # angular frequency samples (1darray, float, (<=m,))
         self.vd = self.vb*self.vdfcal(self.gb) # dispersive velocity at sampled frequency (1darray, float, (m))
-        
-        mask = (self.mp.ws*self.mp.d) <= (self.vd*pi)
-        if mask == []:
-            raise ImportError(f'Given (vb:{vb},gb:{gb}) pair will create aliasing for modeled frequencies!')
+        self.aa = antialias # whether implement the antialias constraint for the absorbing layers
+        if antialias:
+            mask = (self.mp.ws*self.mp.d) > (self.vd*pi)
+            if any(mask):
+                raise ImportError(f'Given (vb:{vb},gb:{gb}) pair will create aliasing for modeled frequencies!')
         
     def vdfcal(self, ga, w=None):
         r'''calculate dispersive velocity factor (beta) according to gamma'''
@@ -236,7 +238,10 @@ class vgopt:
                     vlb2 = np.amax(self.w*self.mp.d/pi/fs)
                     sg = self.mp.s.sinterp(gs)
                     vub2 = sg*self.mp.d/self.mp.dt
-                    vlb = max([vlb1,vlb2])
+                    if self.aa:
+                        vlb = max([vlb1,vlb2])
+                    else:
+                        vlb = vlb1
                     vub = min([vub1,vub2])
                     if vlb>vub:
                         continue
@@ -286,7 +291,7 @@ class vgopt:
         y[N] = alp
         
         # display y
-        y = y.transpose()
+        y = y.T
         if disp:
             cN = pcl.Normalize(vmin=np.amin(y), vmax=np.amax(y))
             fig, ax = plt.subplots(1,1,figsize=(10,3))
@@ -354,10 +359,9 @@ class expand_model_naABC:
         for i in range(3):
             self.ne[i] += 2*(self.Nmax) # expanded model dimension (list, int, (3))
             self.oe[i] -= self.Nmax*self.d[i] # expanded model origin (list, float, (3))
-        self.xe = np.arange(self.oe[0],self.oe[0]+self.d[0]*self.ne[0],self.d[0])
-        self.ye = np.arange(self.oe[1],self.oe[1]+self.d[1]*self.ne[1],self.d[1])
-        self.ze = np.arange(self.oe[2],self.oe[2]+self.d[2]*self.ne[2],self.d[2]) # expanded model grid coordinates (1darray, float, (ne[012],))
-        
+        # expanded model grid coordinates (1darray, float, (ne[012],))
+        self.xe,self.ye,self.ze = deque(np.arange(self.oe[i],self.oe[i]+self.d[i]*self.ne[i],self.d[i]) for i in range(3))
+                
     def _findboundary(self):
         r'''find unique boundary (v,g) pairs'''
         # first dimension as boundary
@@ -374,7 +378,7 @@ class expand_model_naABC:
         vgrc = vr+1j*gr
         # find unique (vr,qr) pairs
         vguc = np.unique(vgrc)
-        vgu = np.stack((vguc.real,vguc.imag),axis=0).transpose()
+        vgu = np.stack((vguc.real,vguc.imag),axis=0).T
         
         return vgu
     
@@ -423,8 +427,8 @@ class expand_model_naABC:
     def expand_abcs(self):
         r'''expanding v and Q models according to obtained optimal velocity and gamma abcs'''
         # create the expanded models
-        V = expand(self.vm, self.Nmax-1)
-        G = expand(self.gm, self.Nmax-1)
+        V = expand(self.vm, self.Nmax)
+        G = expand(self.gm, self.Nmax)
         # loop through all boundary nodes
         # plane boundary expanding
         print('Plane boundary expanding...')

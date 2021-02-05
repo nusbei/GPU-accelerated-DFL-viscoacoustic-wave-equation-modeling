@@ -43,8 +43,8 @@ def cubeidx(idx):
     return idx_cube
 
 def expand(md, N):
-    r'''expand array with N+1 'edge' condition'''
-    mdp = np.pad(md, N+1, 'edge')
+    r'''expand array with N 'edge' condition'''
+    mdp = np.pad(md, N, 'edge')
     return mdp   
     
 #readin basic modeling parameter
@@ -68,7 +68,7 @@ def readparm(path = './resources',disp=True):
     lm = int(par[4])
     return dt, nt, f0, ln, lm
 
-def show3D(md, xyz, xyzi=(0,0,0), ea=(30,-45), clip=1, rcstride=(10,10), clim=None):
+def show3D(md, xyz, xyzi=(0,0,0), ea=(30,-45), clip=1, rcstride=(10,10), clim=None, tl=None):
     r'''plot 3D cube image:
         md-3-D data volume (3darray, float, (n1,n2,n3))
         xyz-3-D axes coordinates (list, 1darray, (3,))
@@ -102,7 +102,7 @@ def show3D(md, xyz, xyzi=(0,0,0), ea=(30,-45), clip=1, rcstride=(10,10), clim=No
     ax.plot([xi,xi],[xyz[1][0],xyz[1][-1]],[xyz[2][0],xyz[2][0]],'r-',linewidth=2,zorder=10)
     ax.plot([xyz[0][0],xyz[0][0]],[yi,yi],[xyz[2][0],xyz[2][-1]],'r-',linewidth=2,zorder=10)
     ax.plot([xyz[0][0],xyz[0][-1]],[yi,yi],[xyz[2][0],xyz[2][0]],'r-',linewidth=2,zorder=10)
-    ax.plot([xyz[0][0],xyz[0][-1]],[xyz[2][0],xyz[2][0]],[zi,zi],'r-',linewidth=2,zorder=10)
+    ax.plot([xyz[0][0],xyz[0][-1]],[xyz[1][0],xyz[1][0]],[zi,zi],'r-',linewidth=2,zorder=10)
     ax.plot([xyz[0][0],xyz[0][0]],[xyz[1][0],xyz[1][-1]],[zi,zi],'r-',linewidth=2,zorder=10)
     
     # plot the three surfaces
@@ -119,6 +119,8 @@ def show3D(md, xyz, xyzi=(0,0,0), ea=(30,-45), clip=1, rcstride=(10,10), clim=No
     ax.set_xlabel('x (m)',fontsize=12)
     ax.set_ylabel('y (m)',fontsize=12)
     ax.set_zlabel('z (m)',fontsize=12)
+    if tl is not None:
+        ax.set_title(tl,fontsize=12)
     ax.view_init(elev=ea[0],azim=ea[1])
     fig.colorbar(cm.ScalarMappable(norm=cN, cmap='gray'))
     plt.show()
@@ -163,9 +165,6 @@ def un_zip(file_name,dd):
     for names in zip_file.namelist():
         zip_file.extract(names,dd)
     zip_file.close()
-    
-    
-    
     
     
     
