@@ -149,15 +149,17 @@ class model:
 
 # create slicing indices and params for hybrid absorbing boundary condition
 class hABC:
-    def __init__(self, n, N, M=1):
+    def __init__(self, n, N, M=0, linw=False):
         r'''define hybrid absorbing boundary nodes related to
             hybrid OWWE absorbing boundary conditions
             n-model deminsion (model.n)
             N-number of non-zero absorbing layers (int scalar)
-            M-pure owwe absorbing layers among the N layers (int scalar)'''
+            M-pure owwe absorbing layers among the N layers (int scalar)
+            linw-wether to use linear weight (boolean)'''
         self.N = N
         self.M = M
         self.n = n
+        self.linw = linw
         self.ax = np.array([1,2,3],dtype=np.int16)
         self.w2 = self._w2cal()
         # generate outer directions for plane, edge and corner boundaries
@@ -219,8 +221,11 @@ class hABC:
         r'''calculate the transferring weight for TWWE:
             output:
                 w2-TWWE weight vector (1D float array, (N,))'''
-        a = 1.5+0.07*(self.N-self.M)
         w1 = np.zeros(self.N,dtype=np.float32)
+        if self.linw:
+            a = 1
+        else:
+            a = 1.5+0.07*(self.N-self.M)
         for i in range(self.N):
             if i <= self.M:
                 w1[i] = 1
@@ -594,7 +599,7 @@ class LRdecomp:
         idx = np.argsort(self.Pxu[:,0].get())
         self.Pxu = self.Pxu[idx,:]
         
-        del v,g,Pxrd,idx
+        del v,g,Pxrd
         self.mp.free_all_blocks()
     
     def free_gpublocks(self):
@@ -618,23 +623,16 @@ class LRdecomp:
                 D = 0.5*v*self.dt*cp.sqrt(gc)*gh*k0g
                 x = (cp.sin(D*Kg)/D)**2
                 # delete GPU variables
-                k0g = None
-                Kg = None
-                gc = None
-                gh = None
-                D = None
+                del k0g, Kg, gc, gh, D
             else:
                 Vt = 0.5*v*self.dt
                 x = (cp.sin(K*Vt)/Vt)**(2+2*g)
                 # delete GPU variables
-                Vt = None
+                del Vt
         y = x.get()
         
         # delete GPU variables
-        x = None
-        v = None
-        g = None
-        K = None
+        del x, v, g, K
         # free all blocks
         self.mp.free_all_blocks()
 
@@ -654,21 +652,16 @@ class LRdecomp:
                 L = 0.5*v*self.dt*gh*K
                 x = (cp.sinc(L/pi))**2*Kg
                 # delete GPU variables
-                Kg = None
-                gh = None
-                L = None
+                del Kg, gh, L
             else:
                 Vt = 0.5*v*self.dt
                 x = (cp.sin(K*Vt)/Vt)**(1+2*g)
                 # delete GPU variables
-                Vt = None
+                del Vt
         y = x.get()
         
         # delete GPU variables
-        x = None
-        v = None
-        g = None
-        K = None
+        del x, v, g, K
         # free all blocks
         self.mp.free_all_blocks()
         
@@ -700,6 +693,7 @@ class LRdecomp:
             Pxun[i] = self.Px[mi,:][0]
         print(f'Principal Px combinations:{Pxun}')
         W1 = Wks_fun(self.K, Pxun)
+        del Pxui, mi
         
         # compose W2
         print('Ws for W2')
@@ -708,12 +702,12 @@ class LRdecomp:
         _, P2 = la.qr(Ws.T, overwrite_a=True, mode='r', pivoting=True)
         P2m = P2[:self.m]
         Kum = self.Ku[P2m]
-        
         print(f'Principal K components:{Kum}')
         W2 = Wks_fun(Kum, self.Px)
         # calculate A
         Ai = Wks_fun(Kum, Pxun)
         A = la.pinv(Ai)
+        del Kum, Pxun
         
         # reshape W1 and pk
         rs = tuple(np.insert(self.ms,0,self.n))
@@ -723,6 +717,9 @@ class LRdecomp:
         # trancate the accuracy for efficiency
         W1 = np.array(W1,dtype=np.float32)
         pk = np.array(pk,dtype=np.float32)
+        
+        # free all blocks
+        self.mp.free_all_blocks()
         
         return W1, pk
 
@@ -766,11 +763,11 @@ class LRmodeling:
         self.acgeo = acqgeo
         # determine abc type
         typ_abc, = abc
-        if typ_abc not in ('naABCs','hABCs'):
+        if typ_abc not in ('naABCs','hABCs','hnaABCs'):
             raise ImportError(f'The import abc type is {typ_abc}, but it has to be naABCs or hABCs!')
         # determine abc parameters
         par_abc, = abc.values()
-        # expand model for different boundary conditions
+        # readin original model arries
         vm = model(vmh, path=inpath, f0=self.f0)
         Qm = model(Qmh, path=inpath)
         # initially assume no hard boundary
@@ -782,16 +779,22 @@ class LRmodeling:
             else:
                 print('Model expanding for naABC...')
                 self.vgme = expand_model_naABC(typ_tsc,vm,Qm,self.dt,source.ws,vareps=par_abc)
-        else:
+        elif typ_abc == 'hABCs':
             print('Model expanding for hABC...')
             self.vgme = expand_model_hABC(vm,Qm,par_abc)
             vmno = [i-2*(self.vgme.Nmax) for i in self.vgme.ne]
             self.ABC = hABC(vmno, self.vgme.Nmax)
+        else: 
+            print('Model expanding for hnaABC...')
+            vareps,hr0,hN = par_abc # retrive the naABC tolerance and hABC reflectivity and number of hABC layers
+            self.vgme = expand_model_hnaABC(typ_tsc,vm,Qm,self.dt,source.ws,hr0,hN,vareps=vareps)
+            vmno = [i-2*hN for i in self.vgme.ne] # get the expanded model dimension for pure naABC
+            self.ABC = hABC(vmno, hN, linw=True) # create the weight and boundary node indices for outtermost hABC
         self.typ_abc = typ_abc
         print(f'Absorbing layer No: {self.vgme.Nmax}')
         print(f'Runtime for preparing ABCs: {time.time()-ts0} s') # test runtime
         
-        # model size
+        # model size after expanding for ABC
         self.ms = self.vgme.ne
             
         # LR decomposition
@@ -814,12 +817,11 @@ class LRmodeling:
         tau = -v**(2*g-1)/self.w0**(2*g)*cp.sin(pi*g)
         self.yit = yit.get()
         self.tau = tau.get()
-        if self.typ_abc == 'hABCs':
+        if self.typ_abc != 'naABCs':
             # cO for habc
-            cO = cp.sqrt(v2)
+            cO = cp.sqrt(v2)#v*cp.cos(pi*g/2)*(source.ws[1]/self.f0)**g
             self.cO = cO.get()
             del cO
-        
         del v, g, v2, yit, tau
         self.mp.free_all_blocks()
         
@@ -855,10 +857,8 @@ class LRmodeling:
         yit = cp.array(self.yit)
         tau = cp.array(self.tau)
         v2 = cp.array(self.v2)
-        if self.typ_abc == 'hABCs':
+        if self.typ_abc != 'naABCs':
             cO = cp.array(self.cO)
-        
-        if self.typ_abc == 'hABCs':
             r'''here we assume d used in habc are the same along three dimensions,
             this is a flaw of this package that requires futrue modification'''
             if len(list(set(self.vgme.d))) == 1:
@@ -889,7 +889,7 @@ class LRmodeling:
             # create initial time step wavefield
             p0 = cp.zeros(self.ms,dtype=np.float32)
             p1 = cp.array(p0)
-            if self.typ_abc == 'hABCs':
+            if self.typ_abc != 'naABCs':
                 pO = cp.array(p0)
             # create record
             record = cp.zeros((self.nt,self.acgeo.nr_shot[ish]),dtype=np.float32)
@@ -930,7 +930,7 @@ class LRmodeling:
                 p2 = self.dt**2*v2*sp+2*p1-p0
                 del sp
                 # special treatment if using hABCs
-                if self.typ_abc == 'hABCs':
+                if self.typ_abc != 'naABCs':
                     # absorbing boundary condition
                     #(1) for plane boundary
                     pO[self.ABC.Bp] = \

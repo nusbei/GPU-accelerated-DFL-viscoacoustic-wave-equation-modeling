@@ -123,7 +123,7 @@ class stability_cal:
 
 class vgopt_model:
     r'''Global velocity-gamma optimization class'''
-    def __init__(self, typ, d, dt, w0, w, vareps, delg=0.2, M=20, R=2, gu=0.499):
+    def __init__(self, typ, d, dt, w0, w, vareps, delg=0.2, M=20, R=2, gu=0.499, hr0=1):
         # overall model parameters
         self.d = d # grid size (scalar, float)
         self.dt = dt # modeling temporal step size (scalar, float)
@@ -137,6 +137,7 @@ class vgopt_model:
         self.gu = gu # gamma upper bound that can be modelled (scalar, float)
         self.vareps = vareps # maximum tolerance of returning residual (scalar, float)
         self.s = stability_cal(self.w0, self.dt, typ, gu=self.gu) # stability test class (stability_cal calss)
+        self.hr0 = hr0 # outtermost layer reflectivity (if cyclic boundary, r0=1; if hABC boundary, r0<0.5)
 
 class vgopt:
     r'''velocity-gamma optimization'''
@@ -187,7 +188,7 @@ class vgopt:
             eps.append(epsi)
             C = epsi/alp
             # for frequency samples whose C larger than 1, it means this frequency has satisfied the tolerance and does not need to be considered anymore
-            mask = C<1
+            mask = C<self.mp.hr0
             if np.sum(mask)==0:
                 N = I
                 break
@@ -288,7 +289,7 @@ class vgopt:
             vd = np.array(vda)
             psi = ga[i]*self.mp.d/vd
             alp *= (1-r**2)*np.exp(-pi*psi*self.mp.ws)
-        y[N] = alp
+        y[N] = alp*self.mp.hr0
         
         # display y
         y = y.T
@@ -543,7 +544,247 @@ class expand_model_naABC:
                 
         return V, G        
     
+# expand the original v and Q model properly for hybrid Natural-attenuation absorbing boundaruy condition
+class expand_model_hnaABC:
+    r'''expand the velocity and Q model according to given absorbing parameters:
+        the obtained class is a new model class includes both expanded velocity and gamma model information'''
+    def __init__(self, typ_tsc, vm, Qm, dt, w, hr0, hN=1, vareps=None, dvg=[2,1e-4]):
+        r'''typ_tsc-temporal compensator type: (0-no compensator; 1-Compensator A; 2-Compensators B)
+            vm-velocity model (model class)
+            Qm-Q model (model class)
+            dt-temporal step size (float scalar)
+            w-frequency samples (1darray, float, (nw,))
+            hr0-hABC reflection coefficient (float scalar)
+            hN-number of hABC layers (int scalar)
+            vareps-maximum tolerance of returning amplitude from absorbing layers (float scalar)
+            dvg-v and gamma intervals:
+                dv-velocity interval for solving new boundary parameter (float scalar)
+                dg-gamma interval for solving new boundary parameter (float scalar)'''
+        
+        # test the consistency between vm and Qm
+        if not(vm.d == Qm.d) or not(vm.n == Qm.n) or not(vm.o == Qm.o):
+            raise ImportError('vm and Qm are not in consistent space!')
+        if typ_tsc not in (0,1,2):
+            raise ImportError(f'typ_tsc={typ_tsc}, but it must among 0, 1 and 2!')
+        else:
+            self.typ_tsc = typ_tsc # compensator type
+            
+        self.vm = np.array(vm.md) # velocity array (3darray, float, n)
+        self.gm = np.array(np.arctan(1/Qm.md)/pi) # gamma array (3darray, float, n)
+        self.dt = dt # temporal step size (scalar, float)
+        self.w = np.array(w) # valid frequency samples (1darray, float, (nw,))
+        self.hr0 = hr0 # hABC reflectivity for the outtermost layer of hnaABC (float scalar)
+        self.hN = hN # number of hABC layers (int scalar)
+        self.n = np.array(vm.n) # models' original dimension (list, int, (3))
+        self.o = np.array(vm.o) # models' original origin (list, float, (3))
+        self.d = np.array(vm.d) # models' original cell size (list, float, (3))
+        self.x, self.y, self.z = np.array(vm.x), np.array(vm.y), np.array(vm.z) # models' original grid coordinates (1darray, float, (n[012],))
+        self.w0 = vm.w0 # velocity model reference frequency
+
+        if (vareps==None) or (vareps==0):
+            # no abc (cyclic boundary)
+            self.Nmax = 0
+            self.vme, self.gme = self.vm, self.gm
+        elif self.hr0<vareps:
+            raise ImportError('The maximum returning residual torlerance is larger than the reflectivity of hABC!')
+        else:
+            # abc
+            self.dv,self.dg = dvg
+            self.eps = vareps
+            self.vgu = self._findboundary() # unique boundary (v,g) pairs (2darray, float, (nu,2))
+            self.Nmax, self.vga = self.vgacal() # abc layer number and (va,ga) arrays for every (v,g) pairs (3darray, float, (nu, (2,Na))); Nmax: maximum absorbing layer number for all (v,g) pairs (scalar, int) 
+            self.vme, self.gme = self.expand_abcs() # abc expanded velocity and gamma arraies (3darray, float, ne)
+            
+        self.ne = np.array(self.n)
+        self.oe = np.array(self.o)
+        for i in range(3):
+            self.ne[i] += 2*(self.Nmax) # expanded model dimension (list, int, (3))
+            self.oe[i] -= (self.Nmax)*self.d[i] # expanded model origin (list, float, (3))
+        # expanded model grid coordinates (1darray, float, (ne[012],))
+        self.xe,self.ye,self.ze = deque(np.arange(self.oe[i],self.oe[i]+self.d[i]*self.ne[i],self.d[i]) for i in range(3))
+                
+    def _findboundary(self):
+        r'''find unique boundary (v,g) pairs'''
+        # first dimension as boundary
+        vg0 = [[self.vm[i,j,k],self.gm[i,j,k]] for i,j,k in product([0,self.n[0]-1], range(self.n[1]), range(self.n[2]))]
+        # second dimension as boundary
+        vg1 = [[self.vm[i,j,k],self.gm[i,j,k]] for i,j,k in product(range(self.n[0]), [0,self.n[1]-1], range(self.n[2]))]
+        # third dimension as boundary
+        vg2 = [[self.vm[i,j,k],self.gm[i,j,k]] for i,j,k in product(range(self.n[0]), range(self.n[1]), [0,self.n[2]-1])]
+        # combine vg012
+        vg = np.concatenate((vg0,vg1,vg2),axis=0)
+        # round up vg according to dv and dg
+        vr = np.around(vg[:,0]/self.dv)*self.dv
+        gr = np.around(vg[:,1]/self.dg)*self.dg
+        vgrc = vr+1j*gr
+        # find unique (vr,qr) pairs
+        vguc = np.unique(vgrc)
+        vgu = np.stack((vguc.real,vguc.imag),axis=0).T
+        
+        return vgu
     
+    def vgacal(self):
+        r'''calculate optimal absorbing layer parameters according to frequency samples and absorbing residual eps'''
+        N = self.vgu.shape[0]
+        print(f'Total No. of unique roundup (v,g) pairs: {N}.')
+        y = np.empty(N,dtype=np.ndarray)
+        Na = np.zeros(N,dtype=np.int16)
+        mp = vgopt_model(self.typ_tsc, d=self.d[0], dt=self.dt, w0=self.w0, w=self.w, vareps=self.eps, hr0=self.hr0)
+        #********progress bar***********#
+        barN = progressbar.ProgressBar(maxval=N, \
+        widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
+        barN.start()
+        #********progress bar***********#
+        for i in range(N):
+            barN.update(i+1)
+            vb = self.vgu[i,0]
+            gb = self.vgu[i,1]
+            opt = vgopt(vb,gb,mp)
+            Na[i],va,ga, _ = opt.Ncal()          
+            y[i] = np.stack((va,ga))
+        barN.finish() # finish progress bar
+        # expand y according to maximum of Na
+        Nm = np.amax(Na)+self.hN
+        vA = np.zeros((N,Nm))
+        gA = np.zeros((N,Nm))
+        for i in range(N):
+            vA[i][-Na[i]-self.hN:-self.hN] = y[i][0]
+            gA[i][-Na[i]-self.hN:-self.hN] = y[i][1]
+            vA[i][-self.hN:] = y[i][0][-1]
+            gA[i][-self.hN:] = y[i][1][-1]
+            if Na[i]<Nm-self.hN:
+                vA[i][:-Na[i]-self.hN] = self.vgu[i,0]
+                gA[i][:-Na[i]-self.hN] = self.vgu[i,1]
+        vga = np.stack((vA,gA))
+        return Nm, vga
+    
+    def _vgaselect(self,i,j,k):
+        vb = np.around(self.vm[i,j,k]/self.dv)*self.dv
+        gb = np.around(self.gm[i,j,k]/self.dg)*self.dg
+        mask = (np.abs(self.vgu[:,0]-vb)<1e-2)*(np.abs(self.vgu[:,1]-gb)<1e-8)
+        va = self.vga[0][mask]
+        ga = self.vga[1][mask]
+        
+        return va, ga
+
+    def expand_abcs(self):
+        r'''expanding v and Q models according to obtained optimal velocity and gamma abcs'''
+        # create the expanded models (1 extra layer for the outtermost OWWE ABC)
+        V = expand(self.vm, self.Nmax)
+        G = expand(self.gm, self.Nmax)
+        # loop through all boundary nodes
+        # plane boundary expanding
+        print('Plane boundary expanding...')
+        # 1st-dim
+        I0 = (np.flip(range(self.Nmax)))
+        I1 = (np.array([range(self.Nmax+self.n[0],2*self.Nmax+self.n[0])]))
+        for i,j,k in product([0,self.n[0]-1], range(self.n[1]), range(self.n[2])):
+            va, ga = self._vgaselect(i,j,k)
+            if i:
+                I = I1
+            else:
+                I = I0
+            J = j+self.Nmax
+            K = k+self.Nmax
+            V[I,J,K] = va
+            G[I,J,K] = ga
+        # 2nd-dim
+        J0 = (np.flip(range(self.Nmax)))
+        J1 = (np.array(range(self.Nmax+self.n[1],2*self.Nmax+self.n[1])))
+        for i,j,k in product(range(self.n[0]),[0,self.n[1]-1], range(self.n[2])):
+            va, ga = self._vgaselect(i,j,k)
+            if j:
+                J = J1
+            else:
+                J = J0
+            I = i+self.Nmax
+            K = k+self.Nmax
+            V[I,J,K] = va
+            G[I,J,K] = ga
+        # 3rd-dim
+        K0 = (np.flip(range(self.Nmax)))
+        K1 = (np.array(range(self.Nmax+self.n[2],2*self.Nmax+self.n[2])))
+        for i,j,k in product(range(self.n[0]),range(self.n[1]),[0,self.n[2]-1]):
+            va, ga = self._vgaselect(i,j,k)
+            if k:
+                K = K1
+            else:
+                K = K0
+            I = i+self.Nmax
+            J = j+self.Nmax
+            V[I,J,K] = va
+            G[I,J,K] = ga
+        
+        # edge boundary
+        print('Edge boundary expanding...')
+        # 1-2 dims
+        K = (np.array(range(self.n[2]))+self.Nmax)
+        for i,j in product([[0,-1],[self.n[0]-1,1]], [[0,-1],[self.n[1]-1,1]]):
+            I0 = i[0]+self.Nmax
+            J0 = j[0]+self.Nmax
+            for inc,jnc in product(range(1,self.Nmax+1),range(1,self.Nmax+1)):
+                I = I0+inc*i[1]
+                J = J0+jnc*j[1]
+                if inc>=jnc:
+                    V[I,J,K] = V[I,J0,K]
+                    G[I,J,K] = G[I,J0,K]
+                else:
+                    V[I,J,K] = V[I0,J,K]
+                    G[I,J,K] = G[I0,J,K]
+        # 1-3 dims
+        J = (np.array(range(self.n[1]))+self.Nmax)
+        for i,k in product([[0,-1],[self.n[0]-1,1]], [[0,-1],[self.n[2]-1,1]]):
+            I0 = i[0]+self.Nmax
+            K0 = k[0]+self.Nmax
+            for inc,knc in product(range(1,self.Nmax+1),range(1,self.Nmax+1)):
+                I = I0+inc*i[1]
+                K = K0+knc*k[1]
+                if inc>=knc:
+                    V[I,J,K] = V[I,J,K0]
+                    G[I,J,K] = G[I,J,K0]
+                else:
+                    V[I,J,K] = V[I0,J,K]
+                    G[I,J,K] = G[I0,J,K]
+        # 2-3 dims
+        I = (np.array(range(self.n[0]))+self.Nmax)
+        for j,k in product([[0,-1],[self.n[1]-1,1]], [[0,-1],[self.n[2]-1,1]]):
+            J0 = j[0]+self.Nmax
+            K0 = k[0]+self.Nmax
+            for jnc,knc in product(range(1,self.Nmax+1),range(1,self.Nmax+1)):    
+                J = J0+jnc*j[1]
+                K = K0+knc*k[1]
+                if jnc>=knc:
+                    V[I,J,K] = V[I,J,K0]
+                    G[I,J,K] = G[I,J,K0]
+                else:
+                    V[I,J,K] = V[I,J0,K]
+                    G[I,J,K] = G[I,J0,K]
+                
+        # corner boundary
+        print('Corner boundary expanding...')
+        for i,j,k in product([[0,-1],[self.n[0]-1,1]], [[0,-1],[self.n[1]-1,1]], [[0,-1],[self.n[2]-1,1]]):
+            I0 = i[0]+self.Nmax
+            J0 = j[0]+self.Nmax
+            K0 = k[0]+self.Nmax
+            for inc,jnc,knc in product(range(1,self.Nmax+1),range(1,self.Nmax+1),range(1,self.Nmax+1)):
+                I = I0+inc*i[1]
+                J = J0+jnc*j[1]
+                K = K0+knc*k[1]
+                ijknc = np.array([inc,jnc,knc])
+                maxnc = np.amax(ijknc)
+                maxid = np.where(maxnc==ijknc)[0][0]
+                if maxid == 0:
+                    V[I,J,K] = V[I,J0,K0]
+                    G[I,J,K] = G[I,J0,K0]
+                else:
+                    if maxid == 1:
+                        V[I,J,K] = V[I0,J,K0]
+                        G[I,J,K] = G[I0,J,K0]
+                    else:
+                        V[I,J,K] = V[I0,J0,K]
+                        G[I,J,K] = G[I0,J0,K]
+                
+        return V, G       
     
     
     

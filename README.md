@@ -6,5 +6,7 @@ It is a python package for DFL viscoacoustic wave equation modeling based on GPU
 
 ## The naABC-related functions and classes are separately documented in "gvopt.py", which is readily applicable in other viscoacoustic modeling schemes.
 
-# New branch (hnaABC): we are testing the idea of "adding one layer OWWE ABC outside the naABCs".
-Since a single layer of OWWE ABC does not influence the GPU efficiency much, and a single layer of the OWWE ABC could reduce the outtermost reflectivity to typically 0.1. Revise the naABC accordingly could significantly improve the absorbing efficiency with similar number of absorbing layers.
+# New branch (hnaABC): we are testing the idea of "adding a few layers of hABC outside the naABCs".
+**Logic and expectation**: Since a few layers (<=2) of hABC does not slow down the GPU efficiency much, while they could reduce the outtermost reflectivity from original 1 to <0.2. Such revised hnaABC could significantly improve the absorbing efficiency with similar number of absorbing layers.
+
+**Testing results**: Unfortunately, the hABC implemented outside the naABC tends to be unstable. The reason could be the relatively abrupt change (due to smaller number, as 1 or 2, of hABC layers) from TWWE (with very low-velocity, but very high attenuation (Q~0)) to OWWE. In addition, experiments show that with the outtermost layer reflectivity reduced from 1 to 0.1, the number of naABC layers does not decrease much, since most of the absorbing layers are constructed to fufill the initial $\epsilon_0=\varepsilon/10$ in our methodology.
